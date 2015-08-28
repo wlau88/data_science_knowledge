@@ -8,7 +8,7 @@ def hand_value(hand):
 	for card in hand:
 		if card.number.isdigit():
 			total += int(card.number)
-		if card.number in "JQK":
+		elif card.number in "JQK":
 			total += 10
 		else: # Ace case
 			total += 1
@@ -21,11 +21,11 @@ def hand_value(hand):
 
 
 def is_blackjack(hand):
-	return len(hand) == 2 and value(hand) == 21
+	return len(hand) == 2 and hand_value(hand) == 21
 
 
 def is_bust(hand):
-	return value(hand) > 21
+	return hand_value(hand) > 21
 
 
 def print_hand(hand):

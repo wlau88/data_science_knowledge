@@ -22,15 +22,14 @@ class Player(Individual):
 
 	def __init__(self):
 		self.name = raw_input('Enter your name: ')
-		self.money = raw_input('Enter the amount of money you have: ')
+		self.money = int(raw_input('Enter the amount of money you have: '))
 		self.hand = []
 
 
 	def bet(self):
 		bet_size = 0
 		while not (bet_size > 0 and bet_size <= self.money):
-			bet_size = input('You have %d amount of money. How much would you \
-				like to bet: ' % self.money)
+			bet_size = input('You have %d amount of money. How much would you like to bet: ' % self.money)
 		return bet_size
 
 
@@ -57,6 +56,6 @@ class Player(Individual):
 class Dealer(Individual):
 
 	def hit(self):
-		return value(self.hand) < 17
+		return hand_value(self.hand) < 17
 
 
