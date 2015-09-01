@@ -53,16 +53,3 @@ class RandomForest(object):
         labels.
         '''
         return sum(self.predict(X) == y) / float(len(y))
-
-if __name__ == '__main__':
-    from sklearn.cross_validation import train_test_split
-    import pandas as pd
-
-    df = pd.read_csv('congressional_voting.csv', names=['Party']+range(1, 17))
-    y = df.pop('Party').values
-    X = df.values
-    X_train, X_test, y_train, y_test = train_test_split(X, y)
-
-    rf = RandomForest(num_trees=10, num_features=10)
-    rf.fit(X_train, y_train)
-    print "Random Forest score:", rf.score(X_test, y_test)
