@@ -1,0 +1,360 @@
+# Assume postgres installed
+
+# Create DB
+CREATE DATABASE readychef;
+\q
+
+# Dump sql
+psql readychef < readychef.sql
+
+# Go into environment
+psql readychef
+
+# Once in environment
+\s --> see past queries
+
+\d --> see tables
+
+\d events -- see columns of tables
+
+# See what's in each table
+select * from events limit 10;
+select * from meals limit 10;
+select * from referrals limit 10;
+select * from users limit 10;
+select * from visits limit 10;
+
+# Select statements
+select userid from users;
+select count(userid) from users;
+select distinct campaign_id from users;
+
+# Where clauses and filtering
+select * from users where campaign_id = 'FB';
+select userid, dt from users where campaign_id = 'FB';
+
+# Aggregation function
+select count(userid) from users where campaign_id = 'FB';
+select campaign_id, count(userid) from users group by campaign_id;
+select count(distinct dt) from users; # no of unique dates in table
+select max(distinct dt) from users;
+select min(distinct dt) from users;
+
+## Analyzing avg, min, max price by quarter and month
+select type, avg(price), min(price), max(price) from meals group by type;
+
+select * from meals where date_part('month', dt) <= 3 and date_part('year', dt) = 2013;
+
+select type, avg(price), min(price), max(price) 
+from meals 
+where date_part('month', dt) <= 3 and date_part('year', dt) = 2013 group by type;
+
+select type, date_part('month', dt) as month, avg(price), min(price), max(price)
+from meals
+where date_part('month', dt) <= 3 and date_part('year', dt) = 2013
+group by type, month;
+
+## Analyzing bought, like, share
+select meal_id,
+sum(case when event='bought' then 1 else 0 end) as bought,
+sum(case when event='like' then 1 else 0 end) as like,
+sum(case when event='share' then 1 else 0 end) as share
+from events group by meal_id;
+
+# Sorting
+select type, avg(price), min(price), max(price) as avg_price 
+from meals group by type order by avg_price desc;
+
+select type, avg(price), min(price), max(price) as avg_price 
+from meals group by type order by type, avg_price desc;
+
+select type, avg(price), min(price), max(price) as avg_price 
+from meals group by type order by 1; # can refer to the column number in sort
+
+# Joins
+select e.userid, campaign_id, e.meal_id, event from users u 
+join events e on u.userid = e.userid and e.event = 'bought' 
+join meals m on e.meal_id = m.meal_id;
+
+select type, count(1) as cnt from events e 
+join meals m on e.meal_id = m.meal_id and 
+e.event = 'bought' group by type order by cnt desc;
+
+select type, count(1) as cnt from events e 
+join meals m on e.meal_id = m.meal_id and e.event = 'bought' 
+group by type order by cnt desc;
+
+# Subqueries ---> can be used as like a filter
+select * from meals where price > (select avg(price) from meals);
+
+## Meals that are above average price by type
+select meals.* from meals join
+(select type, avg(price) as price from meals group by type) average
+on meals.type = average.type and meals.price > average.price;
+
+## Count of meals that are above the average price by type
+select meals.type, count(1) from meals join
+(select type, avg(price) as price from meals group by type) average
+on meals.type = average.type and meals.price > average.price
+group by meals.type;
+
+## Percentage of users coming from each service
+select campaign_id, 
+(cast(count(userid) as real) / (select count(userid) from users)) as percent
+from users group by campaign_id;
+
+## What user from each campaign bought the most items?
+### Create a user_purchases table
+create table user_purchases as 
+(select userid, count(1) as purchases 
+from events where event = 'bought' group by userid);
+
+### Max purchases from each campaign
+select campaign_id, max(purchases) from users 
+join user_purchases on users.userid = user_purchases.userid group by campaign_id;
+
+### Join max purchases with user_purchases table
+with max_campaign as (select campaign_id, max(purchases) from users 
+join user_purchases on users.userid = user_purchases.userid group by campaign_id)
+select userid, campaign_id from user_purchases 
+join max_campaign on user_purchases.purchases = max_campaign.max;
+
+## Number of people registered as of that day (cumulative sum)
+### Get distinct dates
+select distinct dt from users;
+
+### Use distinct dates to join less than or equal to dates and get count
+select u2.dt, count(u1.userid) from users u1 
+join (select distinct dt from users) u2 on u1.dt 
+<= u2.dt group by u2.dt order by u2.dt asc;
+
+## What day of the week gets meals with the most buys?
+select date_part('dow', dt) as dow, count(1) from events 
+where event = 'bought' group by dow
+order by count desc limit 1;
+
+## Which month had the highest percent of users who visited the site purchase a meal?
+
+select v.month, visits, purchases, 
+cast(purchases as real) / visits as percentpurchases_over_visits
+from 
+(select date_part('month', dt) as month, count(userid) as visits from visits
+group by month) v
+join 
+(select date_part('month', dt) as month, count(userid) as purchases 
+from events where event='bought'
+group by month) e
+on v.month = e.month;
+
+## Find all the meals that are above the average price of the previous 7 days.
+
+### Average price of meal of the previous 7 days (rolling max 7 days average)
+	--> self-joins good for listing out combinations 
+with trailing_7 as 
+(select a.meal_id, a.dt, avg(b.price) as trailing_7_avg
+from meals a
+join meals b
+on a.dt >= b.dt and a.dt - 7 < b.dt
+group by a.dt, a.meal_id
+order by a.dt desc)
+# b is the trailing 7 day numbers
+
+# Meals that are above trailing 7 days average
+select count(m.meal_id)
+from meals m
+join trailing_7 t
+on m.meal_id = t.meal_id and m.dt = t.dt and m.price > t.trailing_7_avg
+group by m.meal_id
+
+### More succinct version using HAVING
+select count(a.meal_id)
+from meals a
+join meals b
+on b.dt <= a.dt and b.dt > a.dt - 7
+group by a.meal_id, a.price
+having a.price > AVG(b.price);
+
+## What percent of users have shared more meals than they have liked?
+
+### Like and share per user
+with like_share as 
+(select userid,
+sum(case when event='like' then 1 else 0 end) as _like,
+sum(case when event='share' then 1 else 0 end) as share
+from events group by userid)
+
+select cast(count(userid) as real) / (select count(userid) from users) 
+as percent_share_more_than_like
+from like_share 
+where share > _like;
+
+### Version using HAVING
+select cast(count(1) AS real) / (select count(1) from users)
+from (select userid
+      from events
+      group by userid
+      having
+        sum(case when event='share' then 1 else 0 end) >
+        sum(case when event='like' then 1 else 0 end)) t;
+
+## For every day, count the number of users who have visited the site and done no action.
+
+select visits.dt, count(1)
+from visits
+left outer join events
+on visits.userid=events.userid and visits.dt=events.dt
+where events.userid is null
+group by visits.dt;
+
+## Find all the dates with a greater than average number of meals.
+
+### Average number of meals per day
+(select cast(count(1) as real) / count(distinct dt) from meals)
+
+select dt, count(1) as number_of_meals from meals group by dt 
+having count(meal_id) > 
+(select cast(count(1) as real) / count(distinct dt) from meals)
+order by dt asc;
+
+## Find all the users who bought a meal before liking or sharing a meal. 
+- CONFUSING: did meal_id matter at the group by step, so the bought before like/share sequence
+is captured at the meal_id level
+
+### Query will take a long time to run, so create mini tables
+create table minievents as 
+(select * from events where userid <= 10);
+
+### Join to generate all bought instances that occure before like/share instances
+
+# On minievents. After each join table gets bigger
+select u.userid
+from users u
+join events a
+on
+    u.userid=a.userid and
+    a.event='like' or a.event='share'
+join events b
+on
+    u.userid=b.userid and
+    b.event='bought'
+group by u.userid
+having min(b.dt) < min(a.dt);
+
+
+
+
+
+
+##### Notes #####
+Advanced SQL
+
+For each day, # of users registered 
+
+1. First create subquery
+SELECT DISTINCT dt FROM users
+
+2. Join with user table. Count the wrong number (TRY IN POSTGRES)
+SELECT users.dt, COUNT(*)
+FROM users
+JOIN subquery d
+GROUP BY users.dt
+ORDER BY users.dt
+
+3. Count the right number
+SELECT dt.dt, COUNT(*)
+FROM users
+JOIN subquery d
+GROUP BY dt.dt
+ORDER BY dt.dt
+
+For each user, # of users registered (SELF JOIN CUMULATIVE PROBLEM interview)
+
+SELECT a.userid, COUNT(1)
+FROM users a
+JOIN users b
+ON a.dt >= b.dt
+GROUP BY a.userid
+ORDER BY a.userid;
+
+Which user from each campaign bought the most?
+
+1. Create subquery
+
+SELECT userid, COUNT(1) AS cnt
+FROM events
+WHERE event='bought'
+GROUP BY userid
+
+2. Join users
+
+SELECT users.userid, COUNT(1), campaign_id AS cnt
+FROM events
+JOIN users
+ON events.userid = users.userid
+WHERE event='bought'
+GROUP BY users.userid, campaign_id
+
+3. Create temporary tables
+
+WITH 
+counts AS (
+    SELECT users.userid, COUNT(1), campaign_id AS cnt
+    FROM events
+    JOIN users
+    ON events.userid = users.userid
+    WHERE event='bought'
+    GROUP BY users.userid, campaign_id
+)
+
+max_cnts AS (
+(SELECT campaign_id, MAX(cnt) as m
+FROM counts
+GROUP BY campaign_id)
+)
+
+SELECT
+FROM counts.campaign_id, counts.userid, counts.cnt
+JOIN max_cnts
+ON max_cnts.m=counts.cnt AND
+max_cnts.campaign_id=counts.campaign_id;
+
+For each day count # of users who visited but didn't buy anything
+
+1. # of users who visited the site each day
+
+SELECT dt, COUNT(DISTINCT userid #if bought more than 1 thing, don't count twice)
+FROM visits
+JOIN events
+ON
+    visits.userid=events.userid AND
+    visits.dt=events.dt AND
+    events.event=
+GROUP BY visits.dt
+
+2. Outer join
+
+SELECT dt, COUNT(DISTINCT userid #if bought more than 1 thing, don't count twice)
+FROM visits
+LEFT OUTER JOIN events
+ON
+    visits.userid=events.userid AND
+    visits.dt=events.dt AND
+    events.event='bought'
+WHERE events.userid IS NULL
+GROUP BY visits.dt
+
+pyscopg
+- c.execute()
+- c.fetchallmanyone
+- conn.rollback
+- conn.commit()
+
+'''CREATE TABLE logins_7d_%s AS
+    SELECT userid, COUNT(*) AS cnt
+    FROM (
+    SELECT DISTINCT tmstmp::date as dt, userid
+    FROM logins
+    ) t
+    WHERE t.dt > 
+        timestamp '2014-08-14' - interval 7
+    GROUP BY userid;''' % timestamp

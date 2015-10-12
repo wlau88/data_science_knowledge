@@ -1,0 +1,337 @@
+# Tips and shorthands
+- 'order by random()' --> good for getting a feel for the dataset, return data by 
+random order
+- '::' shorthand for casting --> e.g. select '2013-01-01'::date;
+
+## EDA
+select type, count(1) from registrations group by type;
+
+## Get the number of users who have registered each day, ordered by date.
+# Cumulative counts
+select b.date, count(1) from
+(select distinct date(tmstmp) from registrations order by date) b
+join registrations a
+on a.tmstmp < b.date
+group by b.date
+order by b.date
+
+# Daily counts
+select date(tmstmp), count(1) from registrations group by date order by date
+
+## Which day of the week gets the most registrations? Saturday
+select date_part('dow', tmstmp) as dow, count(1) from registrations 
+group by dow order by count;
+
+## You are sending an email to users who haven't logged in in the week before '2014-08-14' 
+and have not opted out of receiving email. Write a query to select these users.
+
+# Table of userid login information 
+select count(u.userid)
+from
+(select userid from registrations) u 
+left outer join 
+(select userid, count(1) as log_ins_week_before_2014_08_14 
+from logins where tmstmp > timestamp '2014-08-07' 
+group by userid) l
+on u.userid = l.userid
+left outer join optout o on u.userid = o.userid
+where log_ins_week_before_2014_08_14 is NULL and o.userid is NULL
+
+# Simpler left outer join
+select r.userid
+from registrations as r
+left outer join logins as l
+on
+    r.userid=l.userid and
+    l.tmstmp>timestamp '2014-08-07'
+left outer join optout as o
+on r.userid=o.userid
+where
+    l.userid is null and
+    o.userid is null
+order by userid;
+
+# Double EXCEPT
+select userid
+from registrations
+except
+select userid
+from logins
+where tmstmp > timestamp '2014-08-07'
+except
+select userid
+from optout
+order by userid;
+
+## For every user, get the number of users who registered on the same day as them. Hint: This is a self join (join the registrations table with itself).
+
+with registrations_date as 
+(select userid, date(tmstmp) from registrations)
+
+select a.userid, count(1) from registrations_date a
+join registrations_date b
+on a.date = b.date
+group by a.userid
+order by a.userid
+
+## You are running an A/B test and would like to target users who have logged in on mobile more times than web. You should only target users in test group A. 
+Write a query to get all the targeted users.
+
+with web_mobile_logins_stat as 
+(select userid,
+sum(case when type='mobile' then 1 else 0 end) as mobile,
+sum(case when type='web' then 1 else 0 end) as web
+from logins 
+group by userid
+order by userid)
+
+select w.userid, mobile, web 
+from web_mobile_logins_stat w
+join test_group t
+on w.userid = t.userid and mobile > web and t.grp = 'A';
+
+## You would like to determine each user's most communicated with user. For each user, determine the user they exchange the most messages with 
+(outgoing plus incoming).
+
+create table friendship_msg_count as
+(with msg_count as
+(select a.usr, a.other, a.count + b.count as cnt from
+(select sender as usr, recipient as other, count(1) 
+from messages group by sender, recipient) a
+join
+(select recipient as usr, sender as other, count(1) 
+from messages group by sender, recipient) b
+on a.usr = b.usr and a.other = b.other)
+
+select m.usr, c.other, m.cnt
+from msg_count c join
+	(select usr, max(cnt) as cnt from msg_count 
+	group by usr) m
+on c.cnt = m.cnt and c.usr = m.usr);
+
+## You could also consider the length of the messages when determining the user's most communicated with friend. Sum up the length of all the messages 
+communicated between every pair of users and determine which one is the maximum. This should only be a minor change from the previous query.
+
+create table friendship_msg_length as
+(with msg_length as
+(select a.usr, a.other, a.length + b.length as t_length from
+(select sender as usr, recipient as other, sum(char_length(message)) as length 
+from messages group by sender, recipient) a
+join
+(select recipient as usr, sender as other, sum(char_length(message)) as length 
+from messages group by sender, recipient) b
+on a.usr = b.usr and a.other = b.other)
+
+select m.usr, c.other, m.t_length
+from msg_length c join
+	(select usr, max(t_length) as t_length from msg_length
+	group by usr) m
+on c.t_length = m.t_length and c.usr = m.usr);
+
+## What percent of the time are the above two answers different
+
+select count(1)::real / 1000 as percent_of_time_different from friendship_msg_count a 
+join friendship_msg_length b on a.usr = b.usr where a.other <> b.other;
+
+## each user, the number of friends and the number of messages received
+--> what UNION means --> UNION effectively appends the result of query2 to the result 
+of query1 (although there is no guarantee that this is the order in which the rows are 
+actually returned). Furthermore, it eliminates duplicate rows from its result, in the same 
+way as DISTINCT, unless UNION ALL is used.
+
+create table friends_and_messages as 
+
+with cleaned_friends as (
+(select userid1, userid2 from friends)
+union
+(select userid2, userid1 from friends))
+
+select userid1, friends, msg
+from
+(select userid1, count(1) as friends
+from cleaned_friends group by userid1) f 
+join
+(select recipient as userid, count(1) as msg
+from messages group by recipient) m
+on f.userid1 = m.userid;
+
+## Break the users into 9 cohorts based on their number of friends and get the 
+average number of messages for each group
+
+# get max number of friends
+select max(friends) from friends_and_messages;
+
+# cohort is the number of friends divided by 5, rounded down
+select friends/((select max(friends) from friends_and_messages) / 10 + 1) as cohort, 
+avg(messages)
+from friends_and_messages
+group by 1
+order by 1;
+
+## SQL Pipeline ##
+
+- calculations that are regularly needed 
+- build a table that consolodates all the needed information into one table
+- pipeline that creates a table that's a snapshot of the system on that given day
+- in the real world, these tables would be ever changing as users register and 
+do actions on the site
+- useful to have a snapshot of the system taken on every day.
+
+The snapshot will be a table with these columns:
+
+WITH 
+last_login AS (
+SELECT userid, MAX(tmstmp) AS last_login 
+FROM logins
+GROUP BY userid
+ORDER BY userid
+)
+logins_7d AS (
+SELECT registrations.userid AS userid, COALESCE(a.cnt, 0) AS logins_7d
+FROM (
+    SELECT userid, COUNT(*) AS cnt
+    FROM (
+    SELECT DISTINCT tmstmp::date as dt, userid
+    FROM logins
+    ) t
+    WHERE t.dt > timestamp '2014-08-14' - interval '7 days'
+    GROUP BY userid
+    ORDER BY userid
+    ) a
+RIGHT OUTER JOIN registrations 
+ON a.userid = registrations.userid
+ORDER BY registrations.userid
+)
+logins_7d_mobile AS (
+SELECT registrations.userid AS userid, COALESCE(a.cnt, 0) AS logins_7d_mobile
+FROM (
+    SELECT userid, COUNT(*) AS cnt
+    FROM (
+    SELECT DISTINCT tmstmp::date as dt, userid, type
+    FROM logins
+    ) t
+    WHERE t.dt > timestamp '2014-08-14' - interval '7 days'
+        AND t.type = 'mobile'
+    GROUP BY userid
+    ORDER BY userid
+    ) a
+RIGHT OUTER JOIN registrations 
+ON a.userid = registrations.userid
+ORDER BY registrations.userid
+)
+logins_7d_web AS (
+SELECT registrations.userid AS userid, COALESCE(a.cnt, 0) AS logins_7d_web
+FROM (
+    SELECT userid, COUNT(*) AS cnt
+    FROM (
+    SELECT DISTINCT tmstmp::date as dt, userid, type
+    FROM logins
+    ) t
+    WHERE t.dt > timestamp '2014-08-14' - interval '7 days'
+        AND t.type = 'web'
+    GROUP BY userid
+    ORDER BY userid
+    ) a
+RIGHT OUTER JOIN registrations 
+ON a.userid = registrations.userid
+ORDER BY registrations.userid
+)
+opt_out AS (
+SELECT registrations.userid AS userid, 
+    CASE WHEN optout.userid IS NOT NULL THEN 1
+    ELSE 0
+    END
+    AS opt_out
+FROM registrations
+LEFT JOIN optout
+ON registrations.userid = optout.userid
+ORDER BY registrations.userid
+)
+num_friends AS (
+SELECT x.a AS userid, COUNT(*) AS num_friends
+FROM
+((SELECT userid1 AS a, userid2 AS b
+FROM friends) 
+UNION
+(SELECT userid2 AS c, userid1 AS d
+FROM friends)) x
+GROUP BY x.a
+ORDER BY x.a
+)
+SELECT o.userid, o.tmstmp::date, last_login.last_login, 
+    logins_7d.logins_7d, logins_7d_mobile.logins_7d_mobile,
+    logins_7d_web.logins_7d_web, num_friends.num_friends,
+    opt_out.opt_out
+FROM registrations o
+LEFT JOIN last_login ON registrations.userid=last_login.userid
+LEFT JOIN logins_7d ON registrations.userid=logins_7d.userid
+LEFT JOIN logins_7d_mobile ON registrations.userid=logins_7d_mobile.userid
+LEFT JOIN logins_7d_web ON registrations.userid=logins_7d_web.userid
+LEFT JOIN num_friends ON registrations.userid=num_friends.userid
+LEFT JOIN opt_out ON registrations.userid=opt_out.userid
+
+# A more succinct version
+COALESCE - The COALESCE function returns the first of its arguments that is not null. 
+Null is returned only if all arguments are null. It is often used to substitute a 
+default value for null values when data is retrieved for display
+
+import psycopg2
+from datetime import datetime
+
+conn = psycopg2.connect(dbname='socialmedia', user='warren', host='/tmp')
+c = conn.cursor()
+
+date = datetime.today().strftime("%Y%m%d")
+
+c.execute(
+    '''CREATE TABLE tmp_friends_%s AS 
+    SELECT userid1 AS userid, COUNT(*) AS num_friends
+    FROM
+    ((SELECT userid1, userid2 FROM friends)
+    UNION
+    (SELECT userid2, userid1 FROM friends) a
+    GROUP BY userid1;
+    ''' % date
+)
+
+c.execute(
+    '''CREATE TABLE tmp_logins_%s AS
+    SELECT a.userid, a.cnt AS logins_7d_mobile, b.cnt AS logins_7d_web
+    FROM
+    (SELECT userid, COUNT(*) AS cnt
+    FROM logins
+    WHERE logins.tmstmp > current_date - 7 AND type='mobile'
+    GROUP BY userid) a
+    JOIN
+    (SELECT userid, COUNT(*) AS cnt
+    FROM logins
+    WHERE logins.tmstmp > current_date - 7 AND type='web'
+    GROUP BY userid) b
+    ON a.userid=b.userid;
+    ''' % date
+)
+
+c.execute(
+    '''CREATE TABLE users_%s AS
+    SELECT a.userid, a.reg_date, a.last_login, f.num_friends,
+        COALESCE(l.logins_7d_mobile + l.logins_7d_web, 0) AS logins_7d,
+        COALESCE(l.logins_7d_mobile, 0) AS logins_7d_mobile,
+        COALESCE(l.logins_7d_web, 0) AS logins_7d_web,
+        CASE WHEN optout.userid IS NULL THEN 0 ELSE 1 END
+    FROM
+    (SELECT r.userid, r.tmstmp::date AS reg_date, MAX(l.tmstmp::date) AS last_login
+    FROM registrations r
+    LEFT OUTER JOIN logins l
+    ON r.userid=l.userid
+    GROUP BY r.userid, r.tmstmp) a
+    LEFT OUTER JOIN tmp_friends_%s f
+    ON f.userid=a.userid
+    LEFT OUTER JOIN tmp_logins_%s l
+    ON l.userid=a.userid
+    LEFT OUTER JOIN optout
+    ON a.userid=optout.userid;
+    ''' % (date, date, date)
+)
+
+conn.commit()
+conn.close()
