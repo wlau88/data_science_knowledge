@@ -15,6 +15,12 @@ on a.tmstmp < b.date
 group by b.date
 order by b.date
 
+# Cumulative counts using window function
+select distinct date(tmstmp),
+       count(*) over(order by date(tmstmp))
+from registrations
+order by 1;
+
 # Daily counts
 select date(tmstmp), count(1) from registrations group by date order by date
 
